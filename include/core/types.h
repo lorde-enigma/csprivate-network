@@ -52,6 +52,7 @@ struct ClientConfig {
     std::string certificate_path;
     std::string private_key_path;
     bool is_revoked;
+    bool use_route_nopull;
 };
 
 using VPNConfigPtr = std::shared_ptr<VPNConfig>;

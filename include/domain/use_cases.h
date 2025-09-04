@@ -19,7 +19,7 @@ public:
         std::shared_ptr<ConfigurationService> config_service
     );
     
-    bool execute(const VPNConfig& config, const std::string& initial_client_name);
+    bool execute(const VPNConfig& config, const ClientConfig& initial_client);
 
 private:
     std::shared_ptr<VPNRepository> repository_;
@@ -37,7 +37,7 @@ public:
         std::shared_ptr<ConfigurationService> config_service
     );
     
-    bool execute(const std::string& vpn_name, const std::string& client_name);
+    bool execute(const std::string& vpn_name, const ClientConfig& client_config);
 
 private:
     std::shared_ptr<VPNRepository> repository_;

@@ -353,25 +353,31 @@ bool LinuxConfigurationService::generate_server_config(const VPNConfig& config) 
     return true;
 }
 
-bool LinuxConfigurationService::generate_client_config(const std::string& vpn_name, const std::string& client_name) {
+bool LinuxConfigurationService::generate_client_config(const std::string& vpn_name, const ClientConfig& client_config) {
     std::string template_file = "/etc/openvpn/server-" + vpn_name + "/client-common.txt";
     std::string server_dir = "/etc/openvpn/server-" + vpn_name;
     std::string tc_key_file = server_dir + "/tc.key";
     
     std::string template_content = file_system_->read_file(template_file);
     std::string ca_cert = file_system_->read_file(server_dir + "/ca.crt");
-    std::string client_cert = file_system_->read_file(server_dir + "/" + client_name + ".crt");
-    std::string client_key = file_system_->read_file(server_dir + "/" + client_name + ".key");
+    std::string client_cert = file_system_->read_file(server_dir + "/" + client_config.name + ".crt");
+    std::string client_key = file_system_->read_file(server_dir + "/" + client_config.name + ".key");
     std::string tc_key = file_system_->read_file(tc_key_file);
     
-    std::string client_config = template_content + "\n<ca>\n" + ca_cert + "</ca>\n";
-    client_config += "<cert>\n" + extract_certificate_content(client_cert) + "</cert>\n";
-    client_config += "<key>\n" + client_key + "</key>\n";
-    client_config += "<tls-crypt>\n" + extract_tls_crypt_content(tc_key) + "</tls-crypt>\n";
+    std::string client_config_content = template_content;
     
-    std::string output_file = "/root/" + vpn_name + "-" + client_name + ".ovpn";
+    if (client_config.use_route_nopull) {
+        client_config_content += "route-nopull\n";
+    }
     
-    if (!file_system_->write_file(output_file, client_config)) {
+    client_config_content += "\n<ca>\n" + ca_cert + "</ca>\n";
+    client_config_content += "<cert>\n" + extract_certificate_content(client_cert) + "</cert>\n";
+    client_config_content += "<key>\n" + client_key + "</key>\n";
+    client_config_content += "<tls-crypt>\n" + extract_tls_crypt_content(tc_key) + "</tls-crypt>\n";
+    
+    std::string output_file = "/root/" + vpn_name + "-" + client_config.name + ".ovpn";
+    
+    if (!file_system_->write_file(output_file, client_config_content)) {
         logger_->error("failed to write client configuration: " + output_file);
         return false;
     }

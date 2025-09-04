@@ -51,7 +51,7 @@ public:
     virtual ~ConfigurationService() = default;
     
     virtual bool generate_server_config(const VPNConfig& config) = 0;
-    virtual bool generate_client_config(const std::string& vpn_name, const std::string& client_name) = 0;
+    virtual bool generate_client_config(const std::string& vpn_name, const ClientConfig& client_config) = 0;
     virtual bool generate_client_template(const VPNConfig& config) = 0;
     virtual std::string get_client_config_path(const std::string& vpn_name, const std::string& client_name) = 0;
 };

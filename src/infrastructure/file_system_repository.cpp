@@ -143,6 +143,7 @@ std::vector<ClientConfig> FileSystemVPNRepository::get_clients(const std::string
                 client.name = matches[1].str();
                 client.vpn_name = vpn_name;
                 client.is_revoked = (line[0] == 'R');
+                client.use_route_nopull = true;
                 clients.push_back(client);
             }
         }

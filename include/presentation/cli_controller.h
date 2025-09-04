@@ -42,6 +42,7 @@ private:
     VPNConfig collect_vpn_configuration();
     std::string collect_vpn_name();
     std::string collect_client_name();
+    ClientConfig collect_client_info();
     std::string collect_host_ip();
     Protocol collect_protocol();
     uint16_t collect_port();

@@ -70,15 +70,15 @@ void CLIController::handle_create_vpn() {
     std::cout << "=== create new vpn ===\n\n";
     
     VPNConfig config = collect_vpn_configuration();
-    std::string initial_client = collect_client_name();
+    ClientConfig initial_client = collect_client_info();
     
     std::cout << "\ncreating vpn configuration...\n";
     
     if (create_vpn_use_case_->execute(config, initial_client)) {
         std::cout << "vpn '" << config.name << "' created successfully\n";
-        std::cout << "initial client '" << initial_client << "' added\n";
-        std::cout << "client configuration file: ~/" << config.name << "-" << initial_client << ".ovpn\n";
-        logger_->info("created vpn: " + config.name + " with client: " + initial_client);
+        std::cout << "initial client '" << initial_client.name << "' added\n";
+        std::cout << "client configuration file: ~/" << config.name << "-" << initial_client.name << ".ovpn\n";
+        logger_->info("created vpn: " + config.name + " with client: " + initial_client.name);
     } else {
         std::cout << "failed to create vpn '" << config.name << "'\n";
         logger_->error("failed to create vpn: " + config.name);
@@ -118,12 +118,12 @@ void CLIController::handle_manage_vpn() {
     
     switch (action) {
         case 1: {
-            std::string client_name = collect_client_name();
-            if (add_client_use_case_->execute(selected_vpn.name, client_name)) {
-                std::cout << "client '" << client_name << "' added successfully\n";
-                std::cout << "configuration file: ~/" << selected_vpn.name << "-" << client_name << ".ovpn\n";
+            ClientConfig client_config = collect_client_info();
+            if (add_client_use_case_->execute(selected_vpn.name, client_config)) {
+                std::cout << "client '" << client_config.name << "' added successfully\n";
+                std::cout << "configuration file: ~/" << selected_vpn.name << "-" << client_config.name << ".ovpn\n";
             } else {
-                std::cout << "failed to add client '" << client_name << "'\n";
+                std::cout << "failed to add client '" << client_config.name << "'\n";
             }
             break;
         }
@@ -253,6 +253,19 @@ std::string CLIController::collect_client_name() {
     } while (name.empty());
     
     return name;
+}
+
+ClientConfig CLIController::collect_client_info() {
+    ClientConfig client_config;
+    client_config.name = collect_client_name();
+    client_config.is_revoked = false;
+    
+    std::cout << "\nroute-nopull prevents the client from pulling routes from the server.\n";
+    std::cout << "this means the client won't redirect all traffic through the vpn.\n";
+    std::cout << "by default, route-nopull is enabled for security.\n";
+    client_config.use_route_nopull = !get_user_confirmation("disable route-nopull (redirect all traffic through vpn)");
+    
+    return client_config;
 }
 
 std::string CLIController::collect_host_ip() {

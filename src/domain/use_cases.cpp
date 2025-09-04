@@ -15,7 +15,7 @@ CreateVPNUseCase::CreateVPNUseCase(
     system_service_(system_service),
     config_service_(config_service) {}
 
-bool CreateVPNUseCase::execute(const VPNConfig& config, const std::string& initial_client_name) {
+bool CreateVPNUseCase::execute(const VPNConfig& config, const ClientConfig& initial_client) {
     if (repository_->vpn_exists(config.name)) {
         return false;
     }
@@ -40,7 +40,7 @@ bool CreateVPNUseCase::execute(const VPNConfig& config, const std::string& initi
         return false;
     }
     
-    if (!cert_service_->generate_client_certificate(working_config.name, initial_client_name)) {
+    if (!cert_service_->generate_client_certificate(working_config.name, initial_client.name)) {
         return false;
     }
     
@@ -64,7 +64,7 @@ bool CreateVPNUseCase::execute(const VPNConfig& config, const std::string& initi
         return false;
     }
     
-    if (!config_service_->generate_client_config(working_config.name, initial_client_name)) {
+    if (!config_service_->generate_client_config(working_config.name, initial_client)) {
         return false;
     }
     
@@ -88,8 +88,7 @@ bool CreateVPNUseCase::execute(const VPNConfig& config, const std::string& initi
         return false;
     }
     
-    ClientConfig client_config;
-    client_config.name = initial_client_name;
+    ClientConfig client_config = initial_client;
     client_config.vpn_name = working_config.name;
     client_config.is_revoked = false;
     
@@ -104,29 +103,28 @@ AddClientUseCase::AddClientUseCase(
     cert_service_(cert_service),
     config_service_(config_service) {}
 
-bool AddClientUseCase::execute(const std::string& vpn_name, const std::string& client_name) {
+bool AddClientUseCase::execute(const std::string& vpn_name, const ClientConfig& client_config) {
     if (!repository_->vpn_exists(vpn_name)) {
         return false;
     }
     
-    if (repository_->client_exists(vpn_name, client_name)) {
+    if (repository_->client_exists(vpn_name, client_config.name)) {
         return false;
     }
     
-    if (!cert_service_->generate_client_certificate(vpn_name, client_name)) {
+    if (!cert_service_->generate_client_certificate(vpn_name, client_config.name)) {
         return false;
     }
     
-    if (!config_service_->generate_client_config(vpn_name, client_name)) {
+    if (!config_service_->generate_client_config(vpn_name, client_config)) {
         return false;
     }
     
-    ClientConfig client_config;
-    client_config.name = client_name;
-    client_config.vpn_name = vpn_name;
-    client_config.is_revoked = false;
+    ClientConfig working_client_config = client_config;
+    working_client_config.vpn_name = vpn_name;
+    working_client_config.is_revoked = false;
     
-    return repository_->add_client(vpn_name, client_config);
+    return repository_->add_client(vpn_name, working_client_config);
 }
 
 RevokeClientUseCase::RevokeClientUseCase(
