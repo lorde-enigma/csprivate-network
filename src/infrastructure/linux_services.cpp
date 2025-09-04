@@ -355,13 +355,13 @@ bool LinuxConfigurationService::generate_server_config(const VPNConfig& config) 
 
 bool LinuxConfigurationService::generate_client_config(const std::string& vpn_name, const std::string& client_name) {
     std::string template_file = "/etc/openvpn/server-" + vpn_name + "/client-common.txt";
-    std::string easyrsa_dir = "/etc/openvpn/server-" + vpn_name + "/easy-rsa";
-    std::string tc_key_file = "/etc/openvpn/server-" + vpn_name + "/tc.key";
+    std::string server_dir = "/etc/openvpn/server-" + vpn_name;
+    std::string tc_key_file = server_dir + "/tc.key";
     
     std::string template_content = file_system_->read_file(template_file);
-    std::string ca_cert = file_system_->read_file(easyrsa_dir + "/pki/ca.crt");
-    std::string client_cert = file_system_->read_file(easyrsa_dir + "/pki/issued/" + client_name + ".crt");
-    std::string client_key = file_system_->read_file(easyrsa_dir + "/pki/private/" + client_name + ".key");
+    std::string ca_cert = file_system_->read_file(server_dir + "/ca.crt");
+    std::string client_cert = file_system_->read_file(server_dir + "/" + client_name + ".crt");
+    std::string client_key = file_system_->read_file(server_dir + "/" + client_name + ".key");
     std::string tc_key = file_system_->read_file(tc_key_file);
     
     std::string client_config = template_content + "\n<ca>\n" + ca_cert + "</ca>\n";
