@@ -2,6 +2,7 @@
 
 #include "domain/services.h"
 #include "infrastructure/interfaces.h"
+#include "core/types.h"
 
 namespace openvpn_manager {
 
@@ -30,6 +31,11 @@ private:
     std::string get_easyrsa_dir(const std::string& vpn_name);
     bool download_easyrsa(const std::string& easyrsa_dir);
     bool setup_easyrsa_vars(const std::string& easyrsa_dir);
+    std::string get_key_generation_command(CryptoAlgorithm algorithm, const std::string& output_file, int key_size = 4096);
+    std::string get_cert_generation_params(CryptoAlgorithm algorithm);
+    std::string get_optimal_curve_for_performance();
+    std::string detect_ca_algorithm(const std::string& ca_key_path);
+    bool is_curve_supported(const std::string& curve_name);
 };
 
 }

@@ -218,7 +218,7 @@ VPNConfig CLIController::collect_vpn_configuration() {
     config.network.subnet_number = subnet_info.second;
     
     config.dns_provider = collect_dns_provider();
-    config.crypto_algorithm = CryptoAlgorithm::EC_SECP384R1;
+    config.crypto_algorithm = CryptoAlgorithm::SECP384R1;
     
     config.network.ipv6_enabled = false;
     

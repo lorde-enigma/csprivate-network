@@ -5,6 +5,7 @@
 #include "infrastructure/file_system_repository.h"
 #include "presentation/cli_controller.h"
 #include <sstream>
+#include <algorithm>
 
 namespace openvpn_manager {
 
@@ -17,17 +18,23 @@ LinuxNetworkService::LinuxNetworkService(
 NetworkConfig LinuxNetworkService::detect_network_configuration() {
     NetworkConfig config;
     
-    auto result = process_executor_->execute("ip -4 addr | grep inet | grep -vE '127(\\.[0-9]{1,3}){3}' | head -1 | awk '{print $2}' | cut -d'/' -f1");
-    if (result.exit_code == 0) {
+    auto result = process_executor_->execute("ip -4 route get 8.8.8.8 | awk '/src/{print $7}' | head -1");
+    if (result.exit_code == 0 && !result.stdout_output.empty()) {
         config.ipv4_address = result.stdout_output;
-        config.ipv4_address.erase(config.ipv4_address.find_last_not_of("\n\r") + 1);
+        config.ipv4_address.erase(std::find_if(config.ipv4_address.rbegin(), 
+            config.ipv4_address.rend(), [](unsigned char ch) {
+                return !std::isspace(ch);
+            }).base(), config.ipv4_address.end());
     }
     
-    result = process_executor_->execute("ip -6 addr | grep 'inet6 [23]' | head -1 | awk '{print $2}' | cut -d'/' -f1");
+    result = process_executor_->execute("ip -6 route get 2001:4860:4860::8888 2>/dev/null | awk '/src/{print $9}' | head -1");
     if (result.exit_code == 0 && !result.stdout_output.empty()) {
         config.ipv6_address = result.stdout_output;
-        config.ipv6_address.erase(config.ipv6_address.find_last_not_of("\n\r") + 1);
-        config.ipv6_enabled = true;
+        config.ipv6_address.erase(std::find_if(config.ipv6_address.rbegin(), 
+            config.ipv6_address.rend(), [](unsigned char ch) {
+                return !std::isspace(ch);
+            }).base(), config.ipv6_address.end());
+        config.ipv6_enabled = !config.ipv6_address.empty() && config.ipv6_address.substr(0, 4) != "fe80";
     }
     
     return config;
@@ -35,65 +42,62 @@ NetworkConfig LinuxNetworkService::detect_network_configuration() {
 
 std::vector<std::string> LinuxNetworkService::get_available_ip_addresses() {
     std::vector<std::string> addresses;
+    addresses.reserve(16);
     
-    auto result = process_executor_->execute("ip -4 addr show | grep inet | grep -v '127\\.' | awk '{print $2}' | cut -d'/' -f1");
+    auto result = process_executor_->execute("ip -4 addr show | awk '/inet.*brd/{print $2}' | cut -d'/' -f1 | grep -v '^127\\.'");
     if (result.exit_code == 0 && !result.stdout_output.empty()) {
         std::istringstream stream(result.stdout_output);
-        std::string line;
-        while (std::getline(stream, line)) {
-            if (!line.empty() && line != "127.0.0.1") {
-                std::string ip = line;
-                ip.erase(ip.find_last_not_of("\n\r") + 1);
-                
-                bool is_private = false;
-                if (ip.substr(0, 3) == "10." ||
-                    (ip.substr(0, 4) == "172." && ip.length() >= 7)) {
-                    size_t second_dot = ip.find('.', 4);
-                    if (second_dot != std::string::npos) {
-                        try {
-                            int second_octet = std::stoi(ip.substr(4, second_dot - 4));
-                            is_private = (second_octet >= 16 && second_octet <= 31);
-                        } catch (const std::exception&) {
-                            is_private = false;
-                        }
-                    }
-                } else if (ip.substr(0, 8) == "192.168." ||
-                           ip.substr(0, 8) == "169.254.") {
-                    is_private = true;
-                } else {
-                    is_private = (ip.substr(0, 3) == "10.");
-                }
-                
-                addresses.push_back(ip + (is_private ? " (IPv4 private)" : " (IPv4 public)"));
-            }
+        std::string ip;
+        while (std::getline(stream, ip)) {
+            if (ip.empty()) continue;
+            
+            ip.erase(std::find_if(ip.rbegin(), ip.rend(), [](unsigned char ch) {
+                return !std::isspace(ch);
+            }).base(), ip.end());
+            
+            if (ip == "127.0.0.1") continue;
+            
+            const std::string& addr = ip;
+            bool is_private = 
+                addr.substr(0, 3) == "10." ||
+                addr.substr(0, 8) == "192.168." ||
+                addr.substr(0, 8) == "169.254." ||
+                (addr.substr(0, 4) == "172." && addr.length() >= 7 && [&addr]() {
+                    size_t dot_pos = addr.find('.', 4);
+                    if (dot_pos == std::string::npos) return false;
+                    try {
+                        int octet = std::stoi(addr.substr(4, dot_pos - 4));
+                        return octet >= 16 && octet <= 31;
+                    } catch (...) { return false; }
+                }());
+            
+            addresses.emplace_back(std::move(ip) + (is_private ? " (IPv4 private)" : " (IPv4 public)"));
         }
     }
     
-    result = process_executor_->execute("ip -6 addr show | grep 'inet6 [23]' | grep -v 'fe80:' | awk '{print $2}' | cut -d'/' -f1");
+    result = process_executor_->execute("ip -6 addr show | awk '/inet6.*scope global/{print $2}' | cut -d'/' -f1");
     if (result.exit_code == 0 && !result.stdout_output.empty()) {
         std::istringstream stream(result.stdout_output);
-        std::string line;
-        while (std::getline(stream, line)) {
-            if (!line.empty() && line != "::1") {
-                std::string ip = line;
-                ip.erase(ip.find_last_not_of("\n\r") + 1);
-                
-                bool is_private = false;
-                if (ip.length() >= 4) {
-                    std::string prefix = ip.substr(0, 4);
-                    if (prefix.substr(0, 2) == "fc" || prefix.substr(0, 2) == "fd" || 
-                        prefix.substr(0, 3) == "fec") {
-                        is_private = true;
-                    }
-                }
-                
-                addresses.push_back(ip + (is_private ? " (IPv6 private)" : " (IPv6 public)"));
-            }
+        std::string ip;
+        while (std::getline(stream, ip)) {
+            if (ip.empty() || ip == "::1") continue;
+            
+            ip.erase(std::find_if(ip.rbegin(), ip.rend(), [](unsigned char ch) {
+                return !std::isspace(ch);
+            }).base(), ip.end());
+            
+            bool is_private = ip.length() >= 4 && 
+                (ip.substr(0, 4) == "fc00" || ip.substr(0, 4) == "fd00" || 
+                 ip.substr(0, 3) == "fec" || ip.substr(0, 3) == "fed");
+            
+            addresses.emplace_back(std::move(ip) + (is_private ? " (IPv6 private)" : " (IPv6 public)"));
         }
     }
     
-    addresses.insert(addresses.begin(), "::/0 (IPv6 auto-detect)");
-    addresses.insert(addresses.begin(), "0.0.0.0 (IPv4 auto-detect)");
+    addresses.insert(addresses.begin(), {
+        "0.0.0.0 (IPv4 auto-detect)",
+        "::/0 (IPv6 auto-detect)"
+    });
     
     return addresses;
 }
@@ -129,19 +133,48 @@ uint16_t LinuxNetworkService::get_next_available_port() {
 }
 
 bool LinuxNetworkService::enable_ip_forwarding() {
-    auto result = process_executor_->execute("echo 'net.ipv4.ip_forward=1' > /etc/sysctl.d/99-openvpn-forward.conf");
+    std::vector<std::string> sysctl_configs = {
+        "net.ipv4.ip_forward=1",
+        "net.ipv6.conf.all.forwarding=1",
+        "net.ipv4.conf.all.accept_redirects=0",
+        "net.ipv6.conf.all.accept_redirects=0", 
+        "net.ipv4.conf.all.send_redirects=0",
+        "net.ipv4.conf.all.accept_source_route=0",
+        "net.ipv6.conf.all.accept_source_route=0",
+        "net.ipv4.conf.all.log_martians=1",
+        "net.ipv4.icmp_echo_ignore_broadcasts=1",
+        "net.ipv4.icmp_ignore_bogus_error_responses=1",
+        "net.ipv4.conf.all.rp_filter=1",
+        "net.ipv4.conf.default.rp_filter=1",
+        "net.ipv4.tcp_syncookies=1"
+    };
+    
+    std::string config_content;
+    for (const auto& config : sysctl_configs) {
+        config_content += config + "\n";
+    }
+    
+    auto result = process_executor_->execute("echo '" + config_content + "' > /etc/sysctl.d/99-openvpn-security.conf");
     if (result.exit_code != 0) return false;
     
-    result = process_executor_->execute("echo 1 > /proc/sys/net/ipv4/ip_forward");
-    if (result.exit_code != 0) return false;
+    for (const auto& config : sysctl_configs) {
+        auto key_value = config.substr(0, config.find('='));
+        auto value = config.substr(config.find('=') + 1);
+        std::string proc_path = "/proc/sys/";
+        
+        // Replace dots with slashes for proc path
+        for (char& c : key_value) {
+            if (c == '.') c = '/';
+        }
+        proc_path += key_value;
+        
+        result = process_executor_->execute("echo " + value + " > " + proc_path);
+        if (result.exit_code != 0) {
+            logger_->warning("failed to set runtime sysctl: " + config.substr(0, config.find('=')));
+        }
+    }
     
-    result = process_executor_->execute("echo 'net.ipv6.conf.all.forwarding=1' >> /etc/sysctl.d/99-openvpn-forward.conf");
-    if (result.exit_code != 0) return false;
-    
-    result = process_executor_->execute("echo 1 > /proc/sys/net/ipv6/conf/all/forwarding");
-    if (result.exit_code != 0) return false;
-    
-    result = process_executor_->execute("sysctl -p /etc/sysctl.d/99-openvpn-forward.conf");
+    result = process_executor_->execute("sysctl -p /etc/sysctl.d/99-openvpn-security.conf");
     return result.exit_code == 0;
 }
 
@@ -499,12 +532,38 @@ std::string LinuxConfigurationService::generate_server_config_content(const VPNC
     content += "ca easy-rsa/pki/ca.crt\n";
     content += "cert easy-rsa/pki/issued/" + server_name + ".crt\n";
     content += "key easy-rsa/pki/private/" + server_name + ".key\n";
-    content += "dh easy-rsa/pki/dh.pem\n";
-    content += "auth SHA384\n";
+    
+    // APENAS CURVAS ELÍPTICAS - DH não necessário para ECDHE
+    // DH parameters removidos completamente para configuração EC-only
+    
+    // Configurações criptográficas otimizadas APENAS para curvas elípticas
+    content += "auth SHA256\n";
     content += "cipher AES-256-GCM\n";
-    content += "data-ciphers AES-256-GCM:AES-128-GCM:AES-256-CBC\n";
+    content += "data-ciphers AES-256-GCM:ChaCha20-Poly1305:AES-256-OCB\n";
+    content += "data-ciphers-fallback AES-256-CBC\n";
     content += "tls-crypt tc.key\n";
     content += "tls-version-min 1.2\n";
+    
+    // Detectar curva usada para otimizar configuração
+    auto ca_key_path = config.server_dir + "/ca.key";
+    std::string curve_used = "secp256k1"; // default
+    if (file_system_->file_exists(ca_key_path)) {
+        auto result = process_executor_->execute("openssl pkey -in " + ca_key_path + " -text -noout | head -3");
+        if (result.exit_code == 0) {
+            if (result.stdout_output.find("Ed25519") != std::string::npos) {
+                curve_used = "X25519"; // X25519 para ECDHE quando Ed25519 usado para assinatura
+            } else if (result.stdout_output.find("secp256k1") != std::string::npos) {
+                curve_used = "secp256k1";
+            } else if (result.stdout_output.find("secp384r1") != std::string::npos) {
+                curve_used = "secp384r1";
+            }
+        }
+    }
+    
+    // Configurações ECDHE otimizadas
+    content += "ecdh-curve " + curve_used + "\n";
+    content += "tls-cipher ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305\n";
+    
     content += "topology subnet\n";
     content += "server " + subnet + " 255.255.255.0\n";
     
@@ -527,14 +586,32 @@ std::string LinuxConfigurationService::generate_server_config_content(const VPNC
     content += "ifconfig-pool-persist ipp.txt\n";
     content += add_dns_configuration(config.dns_provider);
     content += "push \"block-outside-dns\"\n";
-    content += "keepalive 10 120\n";
-    content += "user nobody\n";
-    content += "group nobody\n";
+    content += "push \"dhcp-option DOMAIN-SEARCH vpn.local\"\n";
+    content += "push \"comp-lzo no\"\n";
+    content += "compress lz4-v2\n";
+    content += "push \"compress lz4-v2\"\n";
+    content += "keepalive 10 60\n";
+    content += "ping-timer-rem\n";
     content += "persist-key\n";
     content += "persist-tun\n";
+    content += "user nobody\n";
+    content += "group nobody\n";
+    content += "chroot /var/empty\n";
     content += "verb 3\n";
+    content += "mute 10\n";
+    content += "status /var/log/openvpn/" + config.name + "-status.log 30\n";
+    content += "log-append /var/log/openvpn/" + config.name + ".log\n";
     content += "crl-verify easy-rsa/pki/crl.pem\n";
     content += "management localhost " + std::to_string(config.port + 1000) + "\n";
+    content += "max-clients 100\n";
+    content += "duplicate-cn\n";
+    content += "client-to-client\n";
+    
+    // Otimizações de performance para EC
+    content += "sndbuf 0\n";
+    content += "rcvbuf 0\n";
+    content += "fast-io\n";
+    content += "# EC-ONLY: RSA removed, ECDHE active, maximum performance\n";
     
     if (config.protocol == Protocol::UDP) {
         content += "explicit-exit-notify\n";
@@ -556,12 +633,35 @@ std::string LinuxConfigurationService::generate_systemd_server_config_content(co
     content += "ca " + server_dir + "/ca.crt\n";
     content += "cert " + server_dir + "/server.crt\n";
     content += "key " + server_dir + "/server.key\n";
-    content += "dh " + server_dir + "/dh.pem\n";
-    content += "auth SHA384\n";
+    
+    // APENAS CURVAS ELÍPTICAS - sem DH parameters
+    
+    content += "auth SHA256\n";
     content += "cipher AES-256-GCM\n";
-    content += "data-ciphers AES-256-GCM:AES-128-GCM:AES-256-CBC\n";
+    content += "data-ciphers AES-256-GCM:ChaCha20-Poly1305:AES-256-OCB\n";
+    content += "data-ciphers-fallback AES-256-CBC\n";
     content += "tls-crypt " + server_dir + "/tc.key\n";
     content += "tls-version-min 1.2\n";
+    
+    // Detectar curva usada
+    auto ca_key_path = server_dir + "/ca.key";
+    std::string curve_used = "secp256k1";
+    if (file_system_->file_exists(ca_key_path)) {
+        auto result = process_executor_->execute("openssl pkey -in " + ca_key_path + " -text -noout | head -3");
+        if (result.exit_code == 0) {
+            if (result.stdout_output.find("Ed25519") != std::string::npos) {
+                curve_used = "X25519";
+            } else if (result.stdout_output.find("secp256k1") != std::string::npos) {
+                curve_used = "secp256k1";
+            } else if (result.stdout_output.find("secp384r1") != std::string::npos) {
+                curve_used = "secp384r1";
+            }
+        }
+    }
+    
+    content += "ecdh-curve " + curve_used + "\n";
+    content += "tls-cipher ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305\n";
+    
     content += "topology subnet\n";
     content += "server " + subnet + " 255.255.255.0\n";
     
@@ -584,14 +684,31 @@ std::string LinuxConfigurationService::generate_systemd_server_config_content(co
     content += "ifconfig-pool-persist ipp.txt\n";
     content += add_dns_configuration(config.dns_provider);
     content += "push \"block-outside-dns\"\n";
-    content += "keepalive 10 120\n";
-    content += "user nobody\n";
-    content += "group openvpn\n";
+    content += "push \"dhcp-option DOMAIN-SEARCH vpn.local\"\n";
+    content += "push \"comp-lzo no\"\n";
+    content += "compress lz4-v2\n";
+    content += "push \"compress lz4-v2\"\n";
+    content += "keepalive 10 60\n";
+    content += "ping-timer-rem\n";
     content += "persist-key\n";
     content += "persist-tun\n";
+    content += "user nobody\n";
+    content += "group openvpn\n";
     content += "verb 3\n";
+    content += "mute 10\n";
+    content += "status /var/log/openvpn/" + config.name + "-status.log 30\n";
+    content += "log-append /var/log/openvpn/" + config.name + ".log\n";
     content += "crl-verify " + server_dir + "/crl.pem\n";
     content += "management localhost " + std::to_string(config.port + 1000) + "\n";
+    content += "max-clients 100\n";
+    content += "duplicate-cn\n";
+    content += "client-to-client\n";
+    
+    // Otimizações EC
+    content += "sndbuf 0\n";
+    content += "rcvbuf 0\n";
+    content += "fast-io\n";
+    content += "# EC-ONLY: Maximum performance with elliptic curves\n";
     
     if (config.protocol == Protocol::UDP) {
         content += "explicit-exit-notify\n";
@@ -613,12 +730,33 @@ std::string LinuxConfigurationService::generate_client_template_content(const VP
     content += "persist-key\n";
     content += "persist-tun\n";
     content += "remote-cert-tls server\n";
-    content += "auth SHA384\n";
+    content += "auth SHA256\n";
     content += "cipher AES-256-GCM\n";
-    content += "data-ciphers AES-256-GCM:AES-128-GCM:AES-256-CBC\n";
+    content += "data-ciphers AES-256-GCM:ChaCha20-Poly1305:AES-256-OCB\n";
+    content += "data-ciphers-fallback AES-256-CBC\n";
     content += "tls-version-min 1.2\n";
+    
+    // EC APENAS - detectar curva usada
+    auto ca_key_path = config.server_dir + "/ca.key";
+    if (file_system_->file_exists(ca_key_path)) {
+        auto result = process_executor_->execute("openssl pkey -in " + ca_key_path + " -text -noout | head -3");
+        if (result.exit_code == 0) {
+            if (result.stdout_output.find("Ed25519") != std::string::npos ||
+                result.stdout_output.find("secp256k1") != std::string::npos ||
+                result.stdout_output.find("secp384r1") != std::string::npos) {
+                content += "# EC-OPTIMIZED: Pure elliptic curve client configuration\n";
+            }
+        }
+    }
+    
+    // Configuração TLS otimizada para EC apenas
+    content += "tls-cipher ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305\n";
+    
     content += "ignore-unknown-option block-outside-dns\n";
+    content += "compress lz4-v2\n";
+    content += "fast-io\n";
     content += "verb 3\n";
+    content += "mute 10\n";
     
     return content;
 }
@@ -760,20 +898,26 @@ bool LinuxNetworkService::configure_firewalld_with_ip(const VPNConfig& config, c
 
 bool LinuxNetworkService::configure_iptables_with_ip(const VPNConfig& config, const std::string& subnet, const std::string& protocol, const std::string& public_ip) {
     std::string service_content = R"([Unit]
-Description=OpenVPN iptables rules for )" + config.name + R"(
+Description=OpenVPN optimized iptables rules for )" + config.name + R"(
 After=network.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-# IPv4 rules
-ExecStart=/usr/sbin/iptables -t nat -A POSTROUTING -s )" + subnet + " ! -d " + subnet + " -j SNAT --to " + public_ip + R"(
+# Optimized IPv4 rules with connection tracking
+ExecStart=/usr/sbin/iptables -t nat -I POSTROUTING -s )" + subnet + " ! -d " + subnet + " -j SNAT --to " + public_ip + R"(
 ExecStart=/usr/sbin/iptables -I INPUT -p )" + protocol + " --dport " + std::to_string(config.port) + R"( -j ACCEPT
 ExecStart=/usr/sbin/iptables -I FORWARD -s )" + subnet + R"( -j ACCEPT
+ExecStart=/usr/sbin/iptables -I FORWARD -d )" + subnet + R"( -m state --state RELATED,ESTABLISHED -j ACCEPT
 ExecStart=/usr/sbin/iptables -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
+# Anti-DDoS and rate limiting
+ExecStart=/usr/sbin/iptables -I INPUT -p )" + protocol + " --dport " + std::to_string(config.port) + R"( -m limit --limit 25/min --limit-burst 100 -j ACCEPT
+ExecStart=/usr/sbin/iptables -A INPUT -p )" + protocol + " --dport " + std::to_string(config.port) + R"( -j DROP
+# Cleanup rules
 ExecStop=/usr/sbin/iptables -t nat -D POSTROUTING -s )" + subnet + " ! -d " + subnet + " -j SNAT --to " + public_ip + R"(
 ExecStop=/usr/sbin/iptables -D INPUT -p )" + protocol + " --dport " + std::to_string(config.port) + R"( -j ACCEPT
 ExecStop=/usr/sbin/iptables -D FORWARD -s )" + subnet + R"( -j ACCEPT
+ExecStop=/usr/sbin/iptables -D FORWARD -d )" + subnet + R"( -m state --state RELATED,ESTABLISHED -j ACCEPT
 ExecStop=/usr/sbin/iptables -D FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT)";
 
     if (config.network.ipv6_enabled && !config.network.ipv6_address.empty()) {
@@ -787,14 +931,20 @@ ExecStop=/usr/sbin/iptables -D FORWARD -m state --state RELATED,ESTABLISHED -j A
         std::string ipv6_subnet = "fddd:1194:" + third_octet + "::/64";
         
         service_content += R"(
-# IPv6 rules
-ExecStart=/usr/sbin/ip6tables -t nat -A POSTROUTING -s )" + ipv6_subnet + " ! -d " + ipv6_subnet + R"( -j MASQUERADE
+# Optimized IPv6 rules
+ExecStart=/usr/sbin/ip6tables -t nat -I POSTROUTING -s )" + ipv6_subnet + " ! -d " + ipv6_subnet + R"( -j MASQUERADE
 ExecStart=/usr/sbin/ip6tables -I INPUT -p )" + protocol + " --dport " + std::to_string(config.port) + R"( -j ACCEPT
 ExecStart=/usr/sbin/ip6tables -I FORWARD -s )" + ipv6_subnet + R"( -j ACCEPT
+ExecStart=/usr/sbin/ip6tables -I FORWARD -d )" + ipv6_subnet + R"( -m state --state RELATED,ESTABLISHED -j ACCEPT
 ExecStart=/usr/sbin/ip6tables -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
+# IPv6 rate limiting
+ExecStart=/usr/sbin/ip6tables -I INPUT -p )" + protocol + " --dport " + std::to_string(config.port) + R"( -m limit --limit 25/min --limit-burst 100 -j ACCEPT
+ExecStart=/usr/sbin/ip6tables -A INPUT -p )" + protocol + " --dport " + std::to_string(config.port) + R"( -j DROP
+# IPv6 cleanup
 ExecStop=/usr/sbin/ip6tables -t nat -D POSTROUTING -s )" + ipv6_subnet + " ! -d " + ipv6_subnet + R"( -j MASQUERADE
 ExecStop=/usr/sbin/ip6tables -D INPUT -p )" + protocol + " --dport " + std::to_string(config.port) + R"( -j ACCEPT
 ExecStop=/usr/sbin/ip6tables -D FORWARD -s )" + ipv6_subnet + R"( -j ACCEPT
+ExecStop=/usr/sbin/ip6tables -D FORWARD -d )" + ipv6_subnet + R"( -m state --state RELATED,ESTABLISHED -j ACCEPT
 ExecStop=/usr/sbin/ip6tables -D FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT)";
     }
     
@@ -807,13 +957,13 @@ WantedBy=multi-user.target
     std::string service_file = "/etc/systemd/system/openvpn-iptables-" + config.name + ".service";
     
     if (!file_system_->write_file(service_file, service_content)) {
-        logger_->error("failed to create iptables service file: " + service_file);
+        logger_->error("failed to create optimized iptables service file: " + service_file);
         return false;
     }
     
     auto result = process_executor_->execute("systemctl enable --now openvpn-iptables-" + config.name + ".service");
     if (result.exit_code != 0) {
-        logger_->error("failed to enable iptables service: " + result.stderr_output);
+        logger_->error("failed to enable optimized iptables service: " + result.stderr_output);
         return false;
     }
     

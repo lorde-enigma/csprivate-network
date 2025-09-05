@@ -22,8 +22,10 @@ enum class DNSProvider {
 };
 
 enum class CryptoAlgorithm {
-    RSA_4096,
-    EC_SECP384R1
+    ED25519,            // Padrão - mais rápido e seguro
+    SECP256K1,          // Bitcoin curve - extremamente otimizada
+    SECP384R1,          // Para compliance empresarial (se necessário)
+    AUTO                // Detecção automática (Ed25519 > secp256k1)
 };
 
 struct NetworkConfig {
