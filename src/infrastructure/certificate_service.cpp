@@ -1,5 +1,7 @@
 #include "infrastructure/certificate_service.h"
 #include <filesystem>
+#include <algorithm>
+#include <cctype>
 
 namespace openvpn_manager {
 
@@ -41,20 +43,8 @@ bool EasyRSACertificateService::generate_ca_certificate(const std::string& vpn_n
     std::string ca_key = server_dir + "/ca.key";
     std::string ca_crt = server_dir + "/ca.crt";
     
-    // Usar apenas curvas elípticas - prioridade: Ed25519 > secp256k1
-    std::string ca_key_cmd;
-    std::string curve_used;
-    
-    if (is_curve_supported("Ed25519")) {
-        ca_key_cmd = "openssl genpkey -algorithm Ed25519 -out " + ca_key;
-        curve_used = "Ed25519";
-    } else if (is_curve_supported("secp256k1")) {
-        ca_key_cmd = "openssl ecparam -genkey -name secp256k1 -out " + ca_key;
-        curve_used = "secp256k1";
-    } else {
-        logger_->error("sistema não suporta curvas elípticas modernas (Ed25519 ou secp256k1)");
-        return false;
-    }
+    std::string ca_key_cmd = "openssl ecparam -genkey -name secp256k1 -out " + ca_key;
+    std::string curve_used = "secp256k1";
     
     auto result = process_executor_->execute(ca_key_cmd);
     if (result.exit_code != 0) {
@@ -76,6 +66,16 @@ bool EasyRSACertificateService::generate_ca_certificate(const std::string& vpn_n
         logger_->warning("failed to set secure permissions on CA key");
     }
     
+    result = process_executor_->execute("chmod 644 " + ca_crt);
+    if (result.exit_code != 0) {
+        logger_->warning("failed to set permissions on CA certificate");
+    }
+    
+    result = process_executor_->execute("chown -R openvpn:openvpn " + server_dir);
+    if (result.exit_code != 0) {
+        logger_->warning("failed to set OpenVPN ownership on server directory");
+    }
+    
     logger_->info("CA certificate generated using " + curve_used + " for: " + vpn_name);
     return true;
 }
@@ -88,20 +88,8 @@ bool EasyRSACertificateService::generate_server_certificate(const std::string& v
     std::string ca_key = server_dir + "/ca.key";
     std::string ca_crt = server_dir + "/ca.crt";
     
-    // Detectar algoritmo usado na CA e usar o mesmo
-    std::string ca_algorithm = detect_ca_algorithm(ca_key);
-    std::string server_key_cmd;
-    
-    if (ca_algorithm == "Ed25519") {
-        server_key_cmd = "openssl genpkey -algorithm Ed25519 -out " + server_key;
-    } else if (ca_algorithm == "secp256k1") {
-        server_key_cmd = "openssl ecparam -genkey -name secp256k1 -out " + server_key;
-    } else if (ca_algorithm == "secp384r1") {
-        server_key_cmd = "openssl ecparam -genkey -name secp384r1 -out " + server_key;
-    } else {
-        logger_->error("CA uses unsupported algorithm: " + ca_algorithm);
-        return false;
-    }
+    std::string server_key_cmd = "openssl ecparam -genkey -name secp256k1 -out " + server_key;
+    std::string ca_algorithm = "secp256k1";
     
     auto result = process_executor_->execute(server_key_cmd);
     if (result.exit_code != 0) {
@@ -146,6 +134,11 @@ bool EasyRSACertificateService::generate_server_certificate(const std::string& v
         logger_->warning("failed to set secure permissions on server key");
     }
     
+    result = process_executor_->execute("chmod 644 " + server_crt);
+    if (result.exit_code != 0) {
+        logger_->warning("failed to set permissions on server certificate");
+    }
+    
     process_executor_->execute("rm -f " + server_csr + " " + ext_file);
     
     logger_->info("server certificate generated using " + ca_algorithm + " for: " + vpn_name);
@@ -160,20 +153,7 @@ bool EasyRSACertificateService::generate_client_certificate(const std::string& v
     std::string ca_key = server_dir + "/ca.key";
     std::string ca_crt = server_dir + "/ca.crt";
     
-    // Detectar algoritmo usado na CA para manter consistência
-    std::string ca_algorithm = detect_ca_algorithm(ca_key);
-    std::string client_key_cmd;
-    
-    if (ca_algorithm == "Ed25519") {
-        client_key_cmd = "openssl genpkey -algorithm Ed25519 -out " + client_key;
-    } else if (ca_algorithm == "secp256k1") {
-        client_key_cmd = "openssl ecparam -genkey -name secp256k1 -out " + client_key;
-    } else if (ca_algorithm == "secp384r1") {
-        client_key_cmd = "openssl ecparam -genkey -name secp384r1 -out " + client_key;
-    } else {
-        logger_->error("CA uses unsupported algorithm: " + ca_algorithm);
-        return false;
-    }
+    std::string client_key_cmd = "openssl ecparam -genkey -name secp256k1 -out " + client_key;
     
     auto result = process_executor_->execute(client_key_cmd);
     if (result.exit_code != 0) {
@@ -182,7 +162,7 @@ bool EasyRSACertificateService::generate_client_certificate(const std::string& v
     }
     
     std::string client_csr_cmd = "openssl req -new -key " + client_key + " -out " + client_csr + 
-                                " -subj '/CN=" + client_name + "-" + ca_algorithm + "/C=US/ST=CA/L=SF/O=OpenVPN-EC/OU=EC-Client'";
+                                " -subj '/CN=" + client_name + "-secp256k1/C=US/ST=CA/L=SF/O=OpenVPN-EC/OU=EC-Client'";
     result = process_executor_->execute(client_csr_cmd);
     
     if (result.exit_code != 0) {
@@ -218,9 +198,15 @@ bool EasyRSACertificateService::generate_client_certificate(const std::string& v
         logger_->warning("failed to set secure permissions on client key for " + client_name);
     }
     
+    // Definir permissões corretas para o certificado do cliente
+    result = process_executor_->execute("chmod 644 " + client_crt);
+    if (result.exit_code != 0) {
+        logger_->warning("failed to set permissions on client certificate for " + client_name);
+    }
+    
     process_executor_->execute("rm -f " + client_csr + " " + ext_file);
     
-    logger_->info("client certificate generated using " + ca_algorithm + " for: " + client_name);
+    logger_->info("client certificate generated using secp256k1 for: " + client_name);
     return true;
 }
 
@@ -228,25 +214,22 @@ bool EasyRSACertificateService::generate_dh_params(const std::string& vpn_name) 
     std::string server_dir = get_easyrsa_dir(vpn_name);
     std::string dh_file = server_dir + "/dh.pem";
     
-    // Com curvas elípticas, DH parameters não são necessários
-    // ECDHE (Elliptic Curve Diffie-Hellman Ephemeral) é usado automaticamente
-    logger_->info("usando curvas elípticas - DH parameters não necessários (ECDHE automático)");
+    logger_->info("generating minimal 2048-bit DH for OpenVPN compatibility: " + vpn_name);
     
-    // Criar arquivo dummy para compatibilidade com scripts legados
-    std::string ec_info = 
-        "-----BEGIN EC-ECDHE INFO-----\n"
-        "# Elliptic Curve Diffie-Hellman Ephemeral (ECDHE) em uso\n"
-        "# DH parameters tradicionais não são necessários\n"
-        "# Perfect Forward Secrecy garantido automaticamente\n"
-        "# Performance superior com curvas elípticas\n"
-        "-----END EC-ECDHE INFO-----\n";
+    std::string dh_cmd = "openssl dhparam -out " + dh_file + " 2048";
+    auto result = process_executor_->execute(dh_cmd);
     
-    if (!file_system_->write_file(dh_file, ec_info)) {
-        logger_->error("failed to write ECDHE info file");
+    if (result.exit_code != 0) {
+        logger_->error("failed to generate DH parameters: " + result.stderr_output);
         return false;
     }
     
-    logger_->info("ECDHE configurado para: " + vpn_name + " (sem DH tradicional necessário)");
+    result = process_executor_->execute("chmod 644 " + dh_file);
+    if (result.exit_code != 0) {
+        logger_->warning("failed to set permissions on DH file");
+    }
+    
+    logger_->info("DH 2048 params created for OpenVPN compatibility: " + vpn_name);
     return true;
 }
 
@@ -329,76 +312,22 @@ bool EasyRSACertificateService::generate_crl(const std::string& vpn_name) {
 }
 
 std::string EasyRSACertificateService::get_optimal_curve_for_performance() {
-    // Ordem de preferência apenas para curvas elípticas modernas
-    std::vector<std::string> curves = {"Ed25519", "secp256k1", "secp384r1"};
-    
-    for (const auto& curve : curves) {
-        if (is_curve_supported(curve)) {
-            logger_->info("selected optimal EC curve: " + curve);
-            return curve;
-        }
-    }
-    
-    logger_->error("no modern elliptic curves supported - sistema incompatível");
-    return "";
+    return "secp256k1";
 }
 
-std::string EasyRSACertificateService::detect_ca_algorithm(const std::string& ca_key_path) {
-    auto result = process_executor_->execute("openssl pkey -in " + ca_key_path + " -text -noout | head -3");
-    if (result.exit_code != 0) {
-        logger_->error("failed to detect CA algorithm");
-        return "";
-    }
-    
-    std::string output = result.stdout_output;
-    if (output.find("Ed25519") != std::string::npos) {
-        return "Ed25519";
-    } else if (output.find("secp256k1") != std::string::npos) {
-        return "secp256k1";
-    } else if (output.find("secp384r1") != std::string::npos || output.find("P-384") != std::string::npos) {
-        return "secp384r1";
-    } else if (output.find("secp521r1") != std::string::npos || output.find("P-521") != std::string::npos) {
-        return "secp521r1";
-    }
-    
-    logger_->error("CA uses unsupported algorithm: " + output);
-    return "";
+std::string EasyRSACertificateService::detect_ca_algorithm(const std::string&) {
+    return "secp256k1";
 }
 
 bool EasyRSACertificateService::is_curve_supported(const std::string& curve_name) {
-    if (curve_name == "Ed25519") {
-        auto result = process_executor_->execute("openssl genpkey -algorithm Ed25519 -out /tmp/test_ed25519.key 2>/dev/null && rm -f /tmp/test_ed25519.key");
-        return result.exit_code == 0;
-    } else {
-        // Testar curvas EC
-        auto result = process_executor_->execute("openssl ecparam -list_curves | grep -q " + curve_name);
-        return result.exit_code == 0;
-    }
+    return curve_name == "secp256k1";
 }
 
-std::string EasyRSACertificateService::get_key_generation_command(CryptoAlgorithm algorithm, const std::string& output_file, int) {
-    switch (algorithm) {
-        case CryptoAlgorithm::SECP256K1:
-            return "openssl ecparam -genkey -name secp256k1 -out " + output_file;
-        case CryptoAlgorithm::ED25519:
-            return "openssl genpkey -algorithm Ed25519 -out " + output_file;
-        case CryptoAlgorithm::SECP384R1:
-            return "openssl ecparam -genkey -name secp384r1 -out " + output_file;
-        case CryptoAlgorithm::AUTO:
-        default:
-            // AUTO: detectar automaticamente o melhor
-            if (is_curve_supported("Ed25519")) {
-                return "openssl genpkey -algorithm Ed25519 -out " + output_file;
-            } else if (is_curve_supported("secp256k1")) {
-                return "openssl ecparam -genkey -name secp256k1 -out " + output_file;
-            } else {
-                return "openssl ecparam -genkey -name secp384r1 -out " + output_file;
-            }
-    }
+std::string EasyRSACertificateService::get_key_generation_command(CryptoAlgorithm, const std::string& output_file, int) {
+    return "openssl ecparam -genkey -name secp256k1 -out " + output_file;
 }
 
 std::string EasyRSACertificateService::get_cert_generation_params(CryptoAlgorithm) {
-    // Para todas as curvas elípticas, SHA256 é optimal
     return "-sha256";
 }
 

@@ -18,13 +18,24 @@ LinuxNetworkService::LinuxNetworkService(
 NetworkConfig LinuxNetworkService::detect_network_configuration() {
     NetworkConfig config;
     
-    auto result = process_executor_->execute("ip -4 route get 8.8.8.8 | awk '/src/{print $7}' | head -1");
+    auto result = process_executor_->execute("ip route get 8.8.8.8 | grep -oP 'src \\K\\S+'");
     if (result.exit_code == 0 && !result.stdout_output.empty()) {
         config.ipv4_address = result.stdout_output;
         config.ipv4_address.erase(std::find_if(config.ipv4_address.rbegin(), 
             config.ipv4_address.rend(), [](unsigned char ch) {
                 return !std::isspace(ch);
             }).base(), config.ipv4_address.end());
+    }
+    
+    if (config.ipv4_address.empty()) {
+        result = process_executor_->execute("hostname -I | awk '{print $1}'");
+        if (result.exit_code == 0 && !result.stdout_output.empty()) {
+            config.ipv4_address = result.stdout_output;
+            config.ipv4_address.erase(std::find_if(config.ipv4_address.rbegin(), 
+                config.ipv4_address.rend(), [](unsigned char ch) {
+                    return !std::isspace(ch);
+                }).base(), config.ipv4_address.end());
+        }
     }
     
     result = process_executor_->execute("ip -6 route get 2001:4860:4860::8888 2>/dev/null | awk '/src/{print $9}' | head -1");
@@ -356,6 +367,12 @@ LinuxConfigurationService::LinuxConfigurationService(
 ) : file_system_(file_system), process_executor_(process_executor), logger_(logger) {}
 
 bool LinuxConfigurationService::generate_server_config(const VPNConfig& config) {
+    // Preparar ambiente OpenVPN com permissões corretas
+    if (!prepare_openvpn_environment(config.name)) {
+        logger_->error("failed to prepare OpenVPN environment for: " + config.name);
+        return false;
+    }
+    
     std::string config_content = generate_server_config_content(config);
     std::string config_file = config.server_dir + "/server.conf";
     std::string systemd_config_content = generate_systemd_server_config_content(config);
@@ -437,121 +454,77 @@ std::string LinuxConfigurationService::get_client_config_path(const std::string&
 }
 
 bool LinuxConfigurationService::fix_certificate_permissions(const std::string& server_dir) {
-    logger_->info("fixing permissions for directory: '" + server_dir + "'");
-    
     if (server_dir.empty()) {
-        logger_->error("server_dir is empty, cannot fix permissions");
+        logger_->error("server_dir is empty");
         return false;
     }
     
-    auto check_command_result = [this](const ProcessExecutor::ExecutionResult& result, const std::string& operation) {
+    auto exec = [this](const std::string& cmd) {
+        auto result = process_executor_->execute(cmd);
         if (result.exit_code != 0) {
-            logger_->error("failed " + operation + ": " + result.stderr_output);
+            logger_->error("command failed: " + cmd + " - " + result.stderr_output);
             return false;
         }
         return true;
     };
     
-    auto result = process_executor_->execute("getent group openvpn >/dev/null 2>&1");
-    if (result.exit_code != 0) {
-        logger_->info("creating openvpn group");
-        result = process_executor_->execute("groupadd openvpn");
-        if (!check_command_result(result, "creating group openvpn")) return false;
-    }
+    if (!exec("getent group openvpn >/dev/null 2>&1 || groupadd openvpn")) return false;
     
-    std::vector<std::string> users = {"nobody", "openvpn"};
-    for (const auto& user : users) {
-        result = process_executor_->execute("id " + user + " >/dev/null 2>&1");
+    for (const auto& user : {"nobody", "openvpn"}) {
+        std::string check_user = "id " + std::string(user) + " >/dev/null 2>&1";
+        auto result = process_executor_->execute(check_user);
         if (result.exit_code == 0) {
-            result = process_executor_->execute("groups " + user + " | grep -q openvpn");
-            if (result.exit_code != 0) {
-                logger_->info("adding user " + user + " to openvpn group");
-                result = process_executor_->execute("usermod -a -G openvpn " + user);
-                if (!check_command_result(result, "adding user " + user + " to group")) return false;
+            std::string check_group = "groups " + std::string(user) + " | grep -q openvpn";
+            auto group_result = process_executor_->execute(check_group);
+            if (group_result.exit_code != 0) {
+                if (!exec("usermod -a -G openvpn " + std::string(user))) return false;
             }
         }
     }
     
-    std::string ipp_file = server_dir + "/ipp.txt";
-    result = process_executor_->execute("test -f " + ipp_file);
-    if (result.exit_code != 0) {
-        logger_->info("creating ipp.txt file");
-        result = process_executor_->execute("touch " + ipp_file);
-        if (!check_command_result(result, "creating ipp.txt")) return false;
-    }
+    if (!exec("test -f " + server_dir + "/ipp.txt || touch " + server_dir + "/ipp.txt")) return false;
+    if (!exec("chown -R root:openvpn " + server_dir)) return false;
+    if (!exec("chmod 750 " + server_dir)) return false;
     
-    result = process_executor_->execute("stat -c '%G' " + server_dir + " | grep -q openvpn");
-    if (result.exit_code != 0) {
-        logger_->info("setting directory group ownership");
-        result = process_executor_->execute("chgrp -R openvpn " + server_dir);
-        if (!check_command_result(result, "setting directory group")) return false;
-    }
-    
-    std::vector<std::pair<std::string, std::string>> file_permissions = {
-        {server_dir, "770"},
-        {server_dir + "/ca.crt", "640"},
-        {server_dir + "/server.crt", "640"},
-        {server_dir + "/server.key", "640"},
-        {server_dir + "/dh.pem", "640"},
-        {server_dir + "/tc.key", "640"},
-        {server_dir + "/crl.pem", "640"},
-        {server_dir + "/ipp.txt", "660"}
+    struct {
+        std::string file;
+        std::string perm;
+    } files[] = {
+        {"/ca.crt", "644"}, {"/server.crt", "644"}, {"/server.key", "600"},
+        {"/dh.pem", "644"}, {"/tc.key", "600"}, {"/crl.pem", "644"}, {"/ipp.txt", "664"}
     };
     
-    for (const auto& [path, perm] : file_permissions) {
-        result = process_executor_->execute("test -e " + path);
-        if (result.exit_code == 0) {
-            result = process_executor_->execute("stat -c '%a' " + path + " | grep -q " + perm);
-            if (result.exit_code != 0) {
-                logger_->info("setting permissions " + perm + " for " + path);
-                result = process_executor_->execute("chmod " + perm + " " + path);
-                if (!check_command_result(result, "setting permissions for " + path)) return false;
-            }
-        }
+    for (const auto& f : files) {
+        std::string path = server_dir + f.file;
+        if (!exec("test -e " + path + " && chmod " + f.perm + " " + path + " || true")) return false;
     }
     
-    result = process_executor_->execute("chmod -R g+r " + server_dir);
-    if (!check_command_result(result, "setting group read permissions")) return false;
+    if (!exec("chmod g+r " + server_dir + "/*")) return false;
+    if (!exec("chmod g+x " + server_dir)) return false;
     
-    result = process_executor_->execute("chmod g+x " + server_dir);
-    if (!check_command_result(result, "setting directory execute permissions")) return false;
-    
-    logger_->info("all permissions verified and corrected for: " + server_dir);
+    logger_->info("permissions configured for: " + server_dir);
     return true;
 }
 
 std::string LinuxConfigurationService::generate_server_config_content(const VPNConfig& config) {
     std::string protocol_str = (config.protocol == Protocol::UDP) ? "udp" : "tcp";
-    std::string server_name = "server-" + config.name;
     std::string subnet = config.network.subnet_address;
     
     std::string content = "local " + config.network.ipv4_address + "\n";
     content += "port " + std::to_string(config.port) + "\n";
     content += "proto " + protocol_str + "\n";
     content += "dev tun-" + config.name + "\n";
-    content += "ca easy-rsa/pki/ca.crt\n";
-    content += "cert easy-rsa/pki/issued/" + server_name + ".crt\n";
-    content += "key easy-rsa/pki/private/" + server_name + ".key\n";
+    content += "ca ca.crt\n";
+    content += "cert server.crt\n";
+    content += "key server.key\n";
     
-    // APENAS CURVAS ELÍPTICAS - DH não necessário para ECDHE
-    // DH parameters removidos completamente para configuração EC-only
-    
-    // Configurações criptográficas otimizadas APENAS para curvas elípticas
-    content += "auth SHA256\n";
-    content += "cipher AES-256-GCM\n";
-    content += "data-ciphers AES-256-GCM:ChaCha20-Poly1305:AES-256-OCB\n";
-    content += "data-ciphers-fallback AES-256-CBC\n";
-    content += "tls-crypt tc.key\n";
-    content += "tls-version-min 1.2\n";
-    
-    // Detectar curva usada para otimizar configuração
     auto ca_key_path = config.server_dir + "/ca.key";
-    std::string curve_used = "secp256k1"; // default
+    std::string curve_used = "secp256k1";
     if (file_system_->file_exists(ca_key_path)) {
         auto result = process_executor_->execute("openssl pkey -in " + ca_key_path + " -text -noout | head -3");
         if (result.exit_code == 0) {
             if (result.stdout_output.find("Ed25519") != std::string::npos) {
-                curve_used = "X25519"; // X25519 para ECDHE quando Ed25519 usado para assinatura
+                curve_used = "X25519";
             } else if (result.stdout_output.find("secp256k1") != std::string::npos) {
                 curve_used = "secp256k1";
             } else if (result.stdout_output.find("secp384r1") != std::string::npos) {
@@ -560,10 +533,14 @@ std::string LinuxConfigurationService::generate_server_config_content(const VPNC
         }
     }
     
-    // Configurações ECDHE otimizadas
-    content += "ecdh-curve " + curve_used + "\n";
+    content += "auth SHA256\n";
+    content += "cipher AES-256-GCM\n";
+    content += "data-ciphers AES-256-GCM:ChaCha20-Poly1305\n";
+    content += "data-ciphers-fallback AES-256-CBC\n";
+    content += "tls-crypt tc.key\n";
+    content += "tls-version-min 1.2\n";
+    content += "tls-groups secp256k1\n";
     content += "tls-cipher ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305\n";
-    
     content += "topology subnet\n";
     content += "server " + subnet + " 255.255.255.0\n";
     
@@ -587,9 +564,6 @@ std::string LinuxConfigurationService::generate_server_config_content(const VPNC
     content += add_dns_configuration(config.dns_provider);
     content += "push \"block-outside-dns\"\n";
     content += "push \"dhcp-option DOMAIN-SEARCH vpn.local\"\n";
-    content += "push \"comp-lzo no\"\n";
-    content += "compress lz4-v2\n";
-    content += "push \"compress lz4-v2\"\n";
     content += "keepalive 10 60\n";
     content += "ping-timer-rem\n";
     content += "persist-key\n";
@@ -601,13 +575,11 @@ std::string LinuxConfigurationService::generate_server_config_content(const VPNC
     content += "mute 10\n";
     content += "status /var/log/openvpn/" + config.name + "-status.log 30\n";
     content += "log-append /var/log/openvpn/" + config.name + ".log\n";
-    content += "crl-verify easy-rsa/pki/crl.pem\n";
+    content += "crl-verify crl.pem\n";
     content += "management localhost " + std::to_string(config.port + 1000) + "\n";
     content += "max-clients 100\n";
     content += "duplicate-cn\n";
     content += "client-to-client\n";
-    
-    // Otimizações de performance para EC
     content += "sndbuf 0\n";
     content += "rcvbuf 0\n";
     content += "fast-io\n";
@@ -622,7 +594,6 @@ std::string LinuxConfigurationService::generate_server_config_content(const VPNC
 
 std::string LinuxConfigurationService::generate_systemd_server_config_content(const VPNConfig& config) {
     std::string protocol_str = (config.protocol == Protocol::UDP) ? "udp" : "tcp";
-    std::string server_name = "server-" + config.name;
     std::string subnet = config.network.subnet_address;
     std::string server_dir = "/etc/openvpn/server-" + config.name;
     
@@ -633,17 +604,8 @@ std::string LinuxConfigurationService::generate_systemd_server_config_content(co
     content += "ca " + server_dir + "/ca.crt\n";
     content += "cert " + server_dir + "/server.crt\n";
     content += "key " + server_dir + "/server.key\n";
+    content += "dh " + server_dir + "/dh.pem\n";
     
-    // APENAS CURVAS ELÍPTICAS - sem DH parameters
-    
-    content += "auth SHA256\n";
-    content += "cipher AES-256-GCM\n";
-    content += "data-ciphers AES-256-GCM:ChaCha20-Poly1305:AES-256-OCB\n";
-    content += "data-ciphers-fallback AES-256-CBC\n";
-    content += "tls-crypt " + server_dir + "/tc.key\n";
-    content += "tls-version-min 1.2\n";
-    
-    // Detectar curva usada
     auto ca_key_path = server_dir + "/ca.key";
     std::string curve_used = "secp256k1";
     if (file_system_->file_exists(ca_key_path)) {
@@ -659,9 +621,14 @@ std::string LinuxConfigurationService::generate_systemd_server_config_content(co
         }
     }
     
-    content += "ecdh-curve " + curve_used + "\n";
+    content += "auth SHA256\n";
+    content += "cipher AES-256-GCM\n";
+    content += "data-ciphers AES-256-GCM:ChaCha20-Poly1305\n";
+    content += "data-ciphers-fallback AES-256-CBC\n";
+    content += "tls-crypt " + server_dir + "/tc.key\n";
+    content += "tls-version-min 1.2\n";
+    content += "tls-groups secp256k1\n";
     content += "tls-cipher ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305\n";
-    
     content += "topology subnet\n";
     content += "server " + subnet + " 255.255.255.0\n";
     
@@ -685,15 +652,10 @@ std::string LinuxConfigurationService::generate_systemd_server_config_content(co
     content += add_dns_configuration(config.dns_provider);
     content += "push \"block-outside-dns\"\n";
     content += "push \"dhcp-option DOMAIN-SEARCH vpn.local\"\n";
-    content += "push \"comp-lzo no\"\n";
-    content += "compress lz4-v2\n";
-    content += "push \"compress lz4-v2\"\n";
     content += "keepalive 10 60\n";
     content += "ping-timer-rem\n";
     content += "persist-key\n";
     content += "persist-tun\n";
-    content += "user nobody\n";
-    content += "group openvpn\n";
     content += "verb 3\n";
     content += "mute 10\n";
     content += "status /var/log/openvpn/" + config.name + "-status.log 30\n";
@@ -703,12 +665,9 @@ std::string LinuxConfigurationService::generate_systemd_server_config_content(co
     content += "max-clients 100\n";
     content += "duplicate-cn\n";
     content += "client-to-client\n";
-    
-    // Otimizações EC
     content += "sndbuf 0\n";
     content += "rcvbuf 0\n";
     content += "fast-io\n";
-    content += "# EC-ONLY: Maximum performance with elliptic curves\n";
     
     if (config.protocol == Protocol::UDP) {
         content += "explicit-exit-notify\n";
@@ -735,23 +694,7 @@ std::string LinuxConfigurationService::generate_client_template_content(const VP
     content += "data-ciphers AES-256-GCM:ChaCha20-Poly1305:AES-256-OCB\n";
     content += "data-ciphers-fallback AES-256-CBC\n";
     content += "tls-version-min 1.2\n";
-    
-    // EC APENAS - detectar curva usada
-    auto ca_key_path = config.server_dir + "/ca.key";
-    if (file_system_->file_exists(ca_key_path)) {
-        auto result = process_executor_->execute("openssl pkey -in " + ca_key_path + " -text -noout | head -3");
-        if (result.exit_code == 0) {
-            if (result.stdout_output.find("Ed25519") != std::string::npos ||
-                result.stdout_output.find("secp256k1") != std::string::npos ||
-                result.stdout_output.find("secp384r1") != std::string::npos) {
-                content += "# EC-OPTIMIZED: Pure elliptic curve client configuration\n";
-            }
-        }
-    }
-    
-    // Configuração TLS otimizada para EC apenas
     content += "tls-cipher ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305\n";
-    
     content += "ignore-unknown-option block-outside-dns\n";
     content += "compress lz4-v2\n";
     content += "fast-io\n";
@@ -967,6 +910,54 @@ WantedBy=multi-user.target
         return false;
     }
     
+    return true;
+}
+
+bool LinuxConfigurationService::prepare_openvpn_environment(const std::string& vpn_name) {
+    // Criar diretório de logs do OpenVPN com permissões corretas
+    if (!file_system_->directory_exists("/var/log/openvpn")) {
+        if (!file_system_->create_directory("/var/log/openvpn", true)) {
+            logger_->error("failed to create OpenVPN log directory");
+            return false;
+        }
+    }
+    
+    // Definir permissões corretas no diretório de logs para systemd
+    auto result = process_executor_->execute("chown root:openvpn /var/log/openvpn");
+    if (result.exit_code != 0) {
+        logger_->warning("failed to set ownership on log directory: " + result.stderr_output);
+    }
+    
+    result = process_executor_->execute("chmod 775 /var/log/openvpn");
+    if (result.exit_code != 0) {
+        logger_->warning("failed to set permissions on log directory: " + result.stderr_output);
+    }
+    
+    // Criar arquivos de log específicos com permissões corretas
+    std::vector<std::string> log_files = {
+        "/var/log/openvpn/" + vpn_name + ".log",
+        "/var/log/openvpn/" + vpn_name + "-status.log"
+    };
+    
+    for (const auto& log_file : log_files) {
+        result = process_executor_->execute("touch " + log_file);
+        if (result.exit_code == 0) {
+            process_executor_->execute("chown root:openvpn " + log_file);
+            process_executor_->execute("chmod 664 " + log_file);
+        }
+    }
+    
+    // Criar diretório /run/openvpn-server se não existir
+    if (!file_system_->directory_exists("/run/openvpn-server")) {
+        if (!file_system_->create_directory("/run/openvpn-server", true)) {
+            logger_->warning("failed to create /run/openvpn-server directory");
+        } else {
+            process_executor_->execute("chown root:openvpn /run/openvpn-server");
+            process_executor_->execute("chmod 775 /run/openvpn-server");
+        }
+    }
+    
+    logger_->info("OpenVPN environment prepared for: " + vpn_name);
     return true;
 }
 

@@ -22,10 +22,7 @@ enum class DNSProvider {
 };
 
 enum class CryptoAlgorithm {
-    ED25519,            // Padrão - mais rápido e seguro
-    SECP256K1,          // Bitcoin curve - extremamente otimizada
-    SECP384R1,          // Para compliance empresarial (se necessário)
-    AUTO                // Detecção automática (Ed25519 > secp256k1)
+    SECP256K1
 };
 
 struct NetworkConfig {
