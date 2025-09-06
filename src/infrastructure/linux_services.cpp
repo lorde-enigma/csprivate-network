@@ -173,7 +173,6 @@ bool LinuxNetworkService::enable_ip_forwarding() {
         auto value = config.substr(config.find('=') + 1);
         std::string proc_path = "/proc/sys/";
         
-        // Replace dots with slashes for proc path
         for (char& c : key_value) {
             if (c == '.') c = '/';
         }
@@ -367,7 +366,6 @@ LinuxConfigurationService::LinuxConfigurationService(
 ) : file_system_(file_system), process_executor_(process_executor), logger_(logger) {}
 
 bool LinuxConfigurationService::generate_server_config(const VPNConfig& config) {
-    // Preparar ambiente OpenVPN com permissões corretas
     if (!prepare_openvpn_environment(config.name)) {
         logger_->error("failed to prepare OpenVPN environment for: " + config.name);
         return false;
@@ -914,7 +912,6 @@ WantedBy=multi-user.target
 }
 
 bool LinuxConfigurationService::prepare_openvpn_environment(const std::string& vpn_name) {
-    // Criar diretório de logs do OpenVPN com permissões corretas
     if (!file_system_->directory_exists("/var/log/openvpn")) {
         if (!file_system_->create_directory("/var/log/openvpn", true)) {
             logger_->error("failed to create OpenVPN log directory");
@@ -922,7 +919,6 @@ bool LinuxConfigurationService::prepare_openvpn_environment(const std::string& v
         }
     }
     
-    // Definir permissões corretas no diretório de logs para systemd
     auto result = process_executor_->execute("chown root:openvpn /var/log/openvpn");
     if (result.exit_code != 0) {
         logger_->warning("failed to set ownership on log directory: " + result.stderr_output);
@@ -933,7 +929,6 @@ bool LinuxConfigurationService::prepare_openvpn_environment(const std::string& v
         logger_->warning("failed to set permissions on log directory: " + result.stderr_output);
     }
     
-    // Criar arquivos de log específicos com permissões corretas
     std::vector<std::string> log_files = {
         "/var/log/openvpn/" + vpn_name + ".log",
         "/var/log/openvpn/" + vpn_name + "-status.log"
@@ -947,7 +942,6 @@ bool LinuxConfigurationService::prepare_openvpn_environment(const std::string& v
         }
     }
     
-    // Criar diretório /run/openvpn-server se não existir
     if (!file_system_->directory_exists("/run/openvpn-server")) {
         if (!file_system_->create_directory("/run/openvpn-server", true)) {
             logger_->warning("failed to create /run/openvpn-server directory");

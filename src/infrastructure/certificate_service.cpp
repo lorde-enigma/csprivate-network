@@ -198,7 +198,6 @@ bool EasyRSACertificateService::generate_client_certificate(const std::string& v
         logger_->warning("failed to set secure permissions on client key for " + client_name);
     }
     
-    // Definir permissões corretas para o certificado do cliente
     result = process_executor_->execute("chmod 644 " + client_crt);
     if (result.exit_code != 0) {
         logger_->warning("failed to set permissions on client certificate for " + client_name);
