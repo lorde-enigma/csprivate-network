@@ -575,7 +575,7 @@ std::string LinuxConfigurationService::generate_server_config_content(const VPNC
     content += "tls-crypt tc.key\n";
     content += "tls-version-min 1.2\n";
     content += "tls-groups secp256k1\n";
-    content += "tls-cipher ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305\n";
+    content += "tls-cipher TLS-ECDHE-ECDSA-WITH-AES-256-GCM-SHA384:TLS-ECDHE-RSA-WITH-AES-256-GCM-SHA384:TLS-ECDHE-ECDSA-WITH-CHACHA20-POLY1305-SHA256:TLS-ECDHE-RSA-WITH-CHACHA20-POLY1305-SHA256\n";
     content += "topology subnet\n";
     content += "server " + subnet + " 255.255.255.0\n";
     
@@ -663,7 +663,7 @@ std::string LinuxConfigurationService::generate_systemd_server_config_content(co
     content += "tls-crypt " + server_dir + "/tc.key\n";
     content += "tls-version-min 1.2\n";
     content += "tls-groups secp256k1\n";
-    content += "tls-cipher ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305\n";
+    content += "tls-cipher TLS-ECDHE-ECDSA-WITH-AES-256-GCM-SHA384:TLS-ECDHE-RSA-WITH-AES-256-GCM-SHA384:TLS-ECDHE-ECDSA-WITH-CHACHA20-POLY1305-SHA256:TLS-ECDHE-RSA-WITH-CHACHA20-POLY1305-SHA256\n";
     content += "topology subnet\n";
     content += "server " + subnet + " 255.255.255.0\n";
     
@@ -729,7 +729,7 @@ std::string LinuxConfigurationService::generate_client_template_content(const VP
     content += "data-ciphers AES-256-GCM:ChaCha20-Poly1305\n";
     content += "data-ciphers-fallback AES-256-CBC\n";
     content += "tls-version-min 1.2\n";
-    content += "tls-cipher ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305\n";
+    content += "tls-cipher TLS-ECDHE-ECDSA-WITH-AES-256-GCM-SHA384:TLS-ECDHE-RSA-WITH-AES-256-GCM-SHA384:TLS-ECDHE-ECDSA-WITH-CHACHA20-POLY1305-SHA256:TLS-ECDHE-RSA-WITH-CHACHA20-POLY1305-SHA256\n";
     content += "ignore-unknown-option block-outside-dns\n";
     content += "compress lz4-v2\n";
     content += "fast-io\n";
