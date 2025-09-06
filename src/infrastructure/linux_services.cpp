@@ -406,6 +406,14 @@ bool LinuxConfigurationService::generate_client_config(const std::string& vpn_na
     std::string server_dir = "/etc/openvpn/server-" + vpn_name;
     std::string tc_key_file = server_dir + "/tc.key";
     
+    std::string client_dir = "/root/vpn-clients/" + vpn_name;
+    if (!file_system_->directory_exists(client_dir)) {
+        if (!file_system_->create_directory(client_dir, true)) {
+            logger_->error("failed to create client directory: " + client_dir);
+            return false;
+        }
+    }
+    
     std::string template_content = file_system_->read_file(template_file);
     std::string ca_cert = file_system_->read_file(server_dir + "/ca.crt");
     std::string client_cert = file_system_->read_file(server_dir + "/" + client_config.name + ".crt");
@@ -423,12 +431,15 @@ bool LinuxConfigurationService::generate_client_config(const std::string& vpn_na
     client_config_content += "<key>\n" + client_key + "</key>\n";
     client_config_content += "<tls-crypt>\n" + extract_tls_crypt_content(tc_key) + "</tls-crypt>\n";
     
-    std::string output_file = "/root/" + vpn_name + "-" + client_config.name + ".ovpn";
+    std::string output_file = client_dir + "/" + client_config.name + ".ovpn";
     
     if (!file_system_->write_file(output_file, client_config_content)) {
         logger_->error("failed to write client configuration: " + output_file);
         return false;
     }
+    
+    process_executor_->execute("chown -R root:root " + client_dir);
+    process_executor_->execute("chmod 600 " + output_file);
     
     logger_->info("generated client configuration: " + output_file);
     return true;
@@ -448,7 +459,33 @@ bool LinuxConfigurationService::generate_client_template(const VPNConfig& config
 }
 
 std::string LinuxConfigurationService::get_client_config_path(const std::string& vpn_name, const std::string& client_name) {
-    return "/root/" + vpn_name + "-" + client_name + ".ovpn";
+    return "/root/vpn-clients/" + vpn_name + "/" + client_name + ".ovpn";
+}
+
+std::vector<std::string> LinuxConfigurationService::list_vpn_clients(const std::string& vpn_name) {
+    std::vector<std::string> clients;
+    std::string server_dir = "/etc/openvpn/server-" + vpn_name;
+    
+    if (!file_system_->directory_exists(server_dir)) {
+        logger_->warning("vpn server directory not found: " + server_dir);
+        return clients;
+    }
+    
+    auto result = process_executor_->execute("find " + server_dir + " -name '*.crt' ! -name 'ca.crt' ! -name 'server.crt' -exec basename {} .crt \\;");
+    if (result.exit_code == 0 && !result.stdout_output.empty()) {
+        std::istringstream stream(result.stdout_output);
+        std::string client_name;
+        while (std::getline(stream, client_name)) {
+            if (!client_name.empty()) {
+                client_name.erase(std::find_if(client_name.rbegin(), client_name.rend(), [](unsigned char ch) {
+                    return !std::isspace(ch);
+                }).base(), client_name.end());
+                clients.push_back(client_name);
+            }
+        }
+    }
+    
+    return clients;
 }
 
 bool LinuxConfigurationService::fix_certificate_permissions(const std::string& server_dir) {
@@ -689,7 +726,7 @@ std::string LinuxConfigurationService::generate_client_template_content(const VP
     content += "remote-cert-tls server\n";
     content += "auth SHA256\n";
     content += "cipher AES-256-GCM\n";
-    content += "data-ciphers AES-256-GCM:ChaCha20-Poly1305:AES-256-OCB\n";
+    content += "data-ciphers AES-256-GCM:ChaCha20-Poly1305\n";
     content += "data-ciphers-fallback AES-256-CBC\n";
     content += "tls-version-min 1.2\n";
     content += "tls-cipher ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305\n";

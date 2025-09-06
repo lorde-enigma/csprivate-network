@@ -69,6 +69,7 @@ public:
     bool generate_client_config(const std::string& vpn_name, const ClientConfig& client_config) override;
     bool generate_client_template(const VPNConfig& config) override;
     std::string get_client_config_path(const std::string& vpn_name, const std::string& client_name) override;
+    std::vector<std::string> list_vpn_clients(const std::string& vpn_name);
     bool fix_certificate_permissions(const std::string& server_dir);
     bool prepare_openvpn_environment(const std::string& vpn_name);
 

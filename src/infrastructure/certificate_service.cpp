@@ -260,7 +260,10 @@ bool EasyRSACertificateService::revoke_client_certificate(const std::string& vpn
     process_executor_->execute("rm -f " + client_crt);
     process_executor_->execute("rm -f " + server_dir + "/" + client_name + ".key");
     
-    logger_->info("client certificate revoked for: " + client_name);
+    std::string client_config_file = "/root/vpn-clients/" + vpn_name + "/" + client_name + ".ovpn";
+    process_executor_->execute("rm -f " + client_config_file);
+    
+    logger_->info("client certificate and config revoked for: " + client_name);
     return true;
 }
 
